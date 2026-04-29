@@ -282,6 +282,17 @@ func (w *FileWorkspace) updateToRef(logger logging.SimpleLogging, c wrappedGitCo
 
 	// For branch strategy it's easy: just *go to* the ref we're supposed to be at.
 	if !w.CheckoutMerge {
+		// If targetRef names a remote-tracking branch (e.g. "master"), reset
+		// to origin/<branch>. `git fetch --all` updates origin/<branch> but
+		// not the local branch ref, so resetting to the bare branch name
+		// leaves HEAD at whatever commit it was at when the workspace was
+		// first cloned. This matters for the /api/plan endpoint, which sets
+		// HeadCommit to a branch name (e.g. "master") rather than a SHA. For
+		// SHA targetRefs (the normal PR flow), origin/<sha> won't resolve, so
+		// we fall back to resetting to the bare ref.
+		if w.remoteHasBranch(logger, c, targetRef) {
+			return w.wrappedGit(logger, c, "reset", "--hard", "origin/"+targetRef)
+		}
 		return w.wrappedGit(logger, c, "reset", "--hard", targetRef)
 	}
 

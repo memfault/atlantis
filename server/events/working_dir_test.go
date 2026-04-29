@@ -481,6 +481,47 @@ func TestClone_ResetOnWrongCommit(t *testing.T) {
 	Equals(t, expCommit, actCommit)
 }
 
+// Test the /api/plan flow, where HeadCommit is a branch name rather than a
+// SHA (api_controller.go sets BaseBranch, HeadBranch, and HeadCommit all to
+// the request's Ref field). We must reset to origin/<branch> after fetch
+// because `git fetch --all` updates origin/<branch> but leaves the local
+// branch ref pinned at the previously checked-out commit, which would make
+// `git reset --hard <branch>` a no-op.
+func TestClone_UpdatesToOriginWhenHeadCommitIsBranchName(t *testing.T) {
+	repoDir := initRepo(t)
+	dataDir := t.TempDir()
+
+	// Clone the repo into the data dir at the initial commit.
+	runCmd(t, dataDir, "mkdir", "-p", "repos/0/")
+	runCmd(t, dataDir, "git", "clone", repoDir, "repos/0/default")
+
+	// Add a new commit on main in the upstream repo so origin/main moves
+	// forward but the cached clone's local main does not.
+	runCmd(t, repoDir, "touch", "newfile")
+	runCmd(t, repoDir, "git", "add", "newfile")
+	runCmd(t, repoDir, "git", "commit", "-m", "newfile")
+	expCommit := strings.TrimSpace(runCmd(t, repoDir, "git", "rev-parse", "HEAD"))
+
+	logger := logging.NewNoopLogger(t)
+	wd := &events.FileWorkspace{
+		DataDir:                     dataDir,
+		CheckoutMerge:               false,
+		TestingOverrideHeadCloneURL: fmt.Sprintf("file://%s", repoDir),
+		GpgNoSigningEnabled:         true,
+	}
+
+	cloneDir, err := wd.Clone(logger, models.Repo{}, models.PullRequest{
+		BaseRepo:   models.Repo{},
+		HeadBranch: "main",
+		HeadCommit: "main",
+		BaseBranch: "main",
+	}, "default")
+	Ok(t, err)
+
+	actCommit := strings.TrimSpace(runCmd(t, cloneDir, "git", "rev-parse", "HEAD"))
+	Equals(t, expCommit, actCommit)
+}
+
 // Test that if the repo is already cloned but is at the wrong commit, but the base has changed
 // we need to reclone
 func TestClone_ReCloneOnBaseChange(t *testing.T) {
