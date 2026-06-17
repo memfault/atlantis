@@ -17,8 +17,26 @@ const (
 	openRouterURL             = "https://openrouter.ai/api/v1/chat/completions"
 	openRouterAPIKeyEnv       = "OPENROUTER_API_KEY"
 	openRouterSystemPromptEnv = "OPENROUTER_TERRAFORM_PLAN_SUMMARIZER_SYSTEM_PROMPT"
+	openRouterModelEnv        = "OPENROUTER_TERRAFORM_PLAN_SUMMARIZER_MODEL"
 	openRouterTimeout         = 30 * time.Second
-	defaultSystemPrompt       = "You are giving a summary of the changes in this terraform plan to a senior engineer. They are looking to know at a glance what is in this plan. Especially highlight any differences between environments; this is very important. For example, if a change is only being applied to one environment this MUST be called out. Your output should be a one-sentence summary followed by detailed bullet points of the changes to be made. Use as many bullet points as you need; the bullet points must cover every change. You may summarize a change, such as \"the AMI is being updated from X to Y in all environments\"; these would not need to be individual bullets. If a change is happening to every environment in the output, do not enumerate environments, just say \"all environments\" or \"all worker_generic\" environments."
+	defaultModel              = "anthropic/claude-opus-4.8"
+	defaultSystemPrompt       = `You summarize Terraform plans for a senior engineer scanning a PR. Give the gist at a glance: a few thematic bullets, never a flat list of every resource.
+
+If no project has resource changes, reply with exactly one line and stop:
+"**No changes.** All {N} projects match current state."
+
+Otherwise:
+1. First line, bold: the combined totals - "**{X} to add, {Y} to change, {Z} to destroy across {M} of {N} projects.**"
+2. Then a few bullets, each describing one logical change, NOT one resource. Collapse aggressively:
+   - Many near-identical resources changing the same way become ONE bullet with a count, not individual lines: "7 listener rules created, one per project key"; "all 4 ASG launch templates rolled to new versions". Never enumerate the instances or print their IDs, keys, or priorities.
+   - A coordinated change spanning several resource types but serving one purpose is ONE bullet: "reworked org2348 ALB routing: replaced 3 multi-key rules with 7 single-key rules".
+   - The same change across environments is ONE bullet ending in its scope: "(all environments)", "(staging + production)".
+   - Keep genuinely unrelated changes as separate bullets.
+3. Say WHAT changed in plain terms; leave out the specific values. Drop opaque identifiers - AMI IDs, image hashes, ARNs, resource IDs, long version strings: "bumped the AMI" or "rolled the launch templates to a new AMI" is enough, no hash. Keep a value inline only when it is short and meaningful at a glance, like a capacity (10 -> 12), a port, or a count.
+4. Stay complete: the bullets together must account for all X+Y+Z resources, but "account for" means summarize-with-a-count, never omit. Prefix the bullet with a warning sign emoji for any destroy or replace, and for anything that hits only some environments.
+5. More than ~6 bullets means you are enumerating instead of summarizing - group harder.
+
+Never report terraform init output, provider/module versions, or backend config - those are not resource changes.`
 )
 
 // openRouterRequest represents the request payload for OpenRouter API
@@ -75,9 +93,15 @@ func SummarizePlans(terraformOutputs []string, logger logging.SimpleLogging) str
 		systemPrompt = defaultSystemPrompt
 	}
 
+	// Get model from environment variable, with fallback to default
+	model := os.Getenv(openRouterModelEnv)
+	if model == "" {
+		model = defaultModel
+	}
+
 	// Prepare the request
 	reqBody := openRouterRequest{
-		Model: "anthropic/claude-sonnet-4.5",
+		Model: model,
 		Messages: []openRouterMessage{
 			{
 				Role:    "system",
